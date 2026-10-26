@@ -89,8 +89,8 @@ impl IOSelector {
         let mut events = vec![EpollEvent::empty(); 1024];
         while let Ok(nfds) = self.epfd.wait(&mut events, PollTimeout::NONE) {
             let mut t = self.wakers.lock().unwrap();
-            for n in 0..nfds {
-                if events[n].data() == self.event.as_raw_fd() as u64 {
+            for item in events.iter().take(nfds) {
+                if item.data() == self.event.as_raw_fd() as u64 {
                     let mut q = self.queue.lock().unwrap();
                     while let Some(op) = q.pop_front() {
                         match op {
@@ -103,7 +103,7 @@ impl IOSelector {
                         }
                     }
                 } else {
-                    let data = events[n].data() as RawFd;
+                    let data = item.data() as RawFd;
                     let waker = t.remove(&data).unwrap();
                     waker.wake_by_ref();
                 }

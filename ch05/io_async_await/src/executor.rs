@@ -51,6 +51,12 @@ impl Executor {
     }
 }
 
+impl Default for Executor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub struct Spawner {
     sender: SyncSender<Arc<Task>>,
 }
