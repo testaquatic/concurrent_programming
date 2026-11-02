@@ -81,7 +81,7 @@ impl Context {
         // 가드 페이지 설정
         unsafe {
             nix::sys::mman::mprotect(
-                NonNull::from_mut(std::mem::transmute(stack)),
+                NonNull::from_mut(&mut *(stack as *mut std::ffi::c_void)),
                 PAGE_SIZE,
                 ProtFlags::PROT_NONE,
             )
@@ -132,7 +132,9 @@ fn get_id() -> u64 {
 pub fn spawn(func: Entry, stack_size: usize) -> u64 {
     unsafe {
         let id = get_id();
-        (*&raw mut CONTEXTS).push_back(Box::new(Context::new(func, stack_size, id)));
+        (&raw mut CONTEXTS)
+            .as_mut_unchecked()
+            .push_back(Box::new(Context::new(func, stack_size, id)));
         schdule();
 
         id
@@ -143,20 +145,20 @@ pub fn spawn(func: Entry, stack_size: usize) -> u64 {
 pub fn schdule() {
     unsafe {
         // 실행 가능한 프로세스가 자신뿐이다.
-        if (&mut *&raw mut CONTEXTS).len() == 1 {
+        if (&raw const CONTEXTS).as_ref_unchecked().len() == 1 {
             return;
         }
 
         // 자신의 컨텍스트를 실행큐의 맨 끝으로 이동한다.
-        let mut ctx = (&mut *&raw mut CONTEXTS).pop_front().unwrap();
+        let mut ctx = (&raw mut CONTEXTS).as_mut_unchecked().pop_front().unwrap();
         // 레지스터 보존 영역을 가리키는 포인터를 얻는다.
         let regs = ctx.get_regs_mut();
-        (*&raw mut CONTEXTS).push_back(ctx);
+        (&raw mut CONTEXTS).as_mut_unchecked().push_back(ctx);
 
         // 레지스터 보존
         if set_context(regs) == 0 {
             // 다음 스레드로 컨텍스트 스위칭
-            let next = (*&raw mut CONTEXTS).front().unwrap();
+            let next = (&raw const CONTEXTS).as_ref_unchecked().front().unwrap();
             switch_context((**next).get_regs());
         }
 
@@ -169,8 +171,8 @@ pub fn schdule() {
 extern "C" fn entry_point() {
     unsafe {
         // 저장한 엔트리 함수 실행
-        let ctx = (*&raw mut CONTEXTS).front().unwrap();
-        ((*ctx).entry)();
+        let ctx = (&raw const CONTEXTS).as_ref_unchecked().front().unwrap();
+        (ctx.entry)();
 
         // 스레드 종료 후
 
@@ -178,16 +180,16 @@ extern "C" fn entry_point() {
         (*ID).remove(&ctx.id);
 
         // 불필요한 스택 영역으로 보존
-        UNUSED_STACK = ((*ctx).stack, (*ctx).stack_layout);
+        UNUSED_STACK = (ctx.stack, ctx.stack_layout);
 
-        match (*&raw mut CONTEXTS).front() {
+        match (&raw const CONTEXTS).as_ref_unchecked().front() {
             Some(c) => {
                 // 다음 스레드로 컨텍스트 스위칭
                 switch_context((**c).get_regs());
             }
             None => {
                 // 모든 스레드가 종료하면 main함수의 스레드로 돌아감
-                if let Some(c) = &*&raw mut CTX_MAIN {
+                if let Some(c) = (&raw const CTX_MAIN).as_ref_unchecked() {
                     switch_context(&**c as *const Registers);
                 }
             }
@@ -201,13 +203,13 @@ extern "C" fn entry_point() {
 pub fn spawn_from_main(func: Entry, stack_size: usize) {
     unsafe {
         // 이미 초기화를 했다면 에러
-        if let Some(_) = *&raw mut CTX_MAIN {
+        if (&raw const CTX_MAIN).as_ref_unchecked().is_some() {
             panic!("spawn_from_main is called twice");
         }
 
         // main 함수 용 컨텍스트 생성
         CTX_MAIN = Some(Box::new(Registers::new(0)));
-        if let Some(ctx) = &mut *&raw mut CTX_MAIN {
+        if let Some(ctx) = (&raw mut CTX_MAIN).as_mut_unchecked() {
             // 글로벌 변수 초기화
             let mut msgs = MappedList::new();
             MESSAGES = &mut msgs;
@@ -221,8 +223,10 @@ pub fn spawn_from_main(func: Entry, stack_size: usize) {
             // 모든 스레드 종료 시 돌아갈 위치 저장
             if set_context(&mut **ctx) == 0 {
                 // 최초 실행하는 스레드의 컨텍스트 생성
-                (*&raw mut CONTEXTS).push_back(Box::new(Context::new(func, stack_size, get_id())));
-                let first = (*&raw mut CONTEXTS).front().unwrap();
+                (&raw mut CONTEXTS)
+                    .as_mut_unchecked()
+                    .push_back(Box::new(Context::new(func, stack_size, get_id())));
+                let first = (&raw const CONTEXTS).as_ref_unchecked().front().unwrap();
                 switch_context(first.get_regs());
             }
 
@@ -231,7 +235,7 @@ pub fn spawn_from_main(func: Entry, stack_size: usize) {
 
             // 글로벌 변수 클리어
             CTX_MAIN = None;
-            (*&raw mut CONTEXTS).clear();
+            (&raw mut CONTEXTS).as_mut_unchecked().clear();
             MESSAGES = std::ptr::null_mut();
             WAITING = std::ptr::null_mut();
             ID = std::ptr::null_mut();
@@ -246,7 +250,7 @@ pub fn spawn_from_main(func: Entry, stack_size: usize) {
 /// 스택을 삭제한다.
 unsafe fn rm_unused_stack() {
     unsafe {
-        if UNUSED_STACK.0 != std::ptr::null_mut() {
+        if !UNUSED_STACK.0.is_null() {
             // 스택 보호 영역 삭제
             nix::sys::mman::mprotect(
                 NonNull::new_unchecked(UNUSED_STACK.0).cast(),
@@ -289,7 +293,7 @@ impl<T> MappedList<T> {
     fn pop_front(&mut self, key: u64) -> Option<T> {
         if let Some(list) = self.map.get_mut(&key) {
             let val = list.pop_front();
-            if list.len() == 0 {
+            if list.is_empty() {
                 self.map.remove(&key);
             }
 
@@ -318,7 +322,7 @@ pub fn send(key: u64, msg: u64) {
 
         // 스레드가 수신 대기 상태이면 실행 큐로 이동시킴
         if let Some(ctx) = (*WAITING).remove(&key) {
-            (*&raw mut CONTEXTS).push_back(ctx);
+            (&raw mut CONTEXTS).as_mut_unchecked().push_back(ctx);
         }
 
         schdule();
@@ -329,7 +333,7 @@ pub fn send(key: u64, msg: u64) {
 pub fn recv() -> Option<u64> {
     unsafe {
         // 스레드 ID 취득
-        let key = (*&raw mut CONTEXTS).front().unwrap().id;
+        let key = (&raw const CONTEXTS).as_ref_unchecked().front().unwrap().id;
 
         // 메시지가 이미 큐에 있으면 즉시 반환
         if let Some(msg) = (*MESSAGES).pop_front(key) {
@@ -337,18 +341,18 @@ pub fn recv() -> Option<u64> {
         }
 
         // 실행 가능한 스레드가 없으면 데드락
-        if (*&raw mut CONTEXTS).len() == 1 {
+        if (&raw const CONTEXTS).as_ref_unchecked().len() == 1 {
             panic!("deadlock");
         }
 
         // 실행 중 스레드를 수신 대기 상태로 이동
-        let mut ctx = (*&raw mut CONTEXTS).pop_front().unwrap();
+        let mut ctx = (&raw mut CONTEXTS).as_mut_unchecked().pop_front().unwrap();
         let regs = ctx.get_regs_mut();
         (*WAITING).insert(key, ctx);
 
         // 다음 실행 가능한 스레드를 컨텍스트 스위칭
         if set_context(regs) == 0 {
-            let next = (*&raw mut CONTEXTS).front().unwrap();
+            let next = (&raw const CONTEXTS).as_ref_unchecked().front().unwrap();
             switch_context((**next).get_regs());
         }
 
