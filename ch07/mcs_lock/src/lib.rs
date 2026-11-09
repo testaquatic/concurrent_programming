@@ -109,7 +109,7 @@ impl<T> MCSLock<T> {
 impl<'a, T> Drop for MCSLockGuard<'a, T> {
     fn drop(&mut self) {
         // 자신의 다음 노드가 `null`이고 자신이 맨 끝 노드라면 맨 끝을 `null`로 설정한다.
-        if self.node.next.load(Ordering::Relaxed).is_null() {
+        if self.node.next.load(Ordering::Relaxed).is_null() { 
             let ptr = self.node as *mut MCSNode<T>;
             if self
                 .mcs_lock
